@@ -40,7 +40,9 @@
 #include "drivers/unix/ip_unix.h"
 #include "drivers/unix/net_socket_posix.h"
 #include "drivers/unix/thread_posix.h"
+#include "file_access_vita.h"
 #include "main/main.h"
+#include "pack_preload_vita.h"
 #include "servers/audio_server.h"
 #include "servers/visual/visual_server_raster.h"
 #include "servers/visual/visual_server_wrap_mt.h"
@@ -51,10 +53,11 @@
 /// Clock Setup function (used by get_ticks_usec)
 static uint64_t _clock_start = 0;
 
+// clock_gettime() goes through newlib -> libc.suprx and costs a syscall every
+// single time. sceKernelGetProcessTimeWide() is a direct, much cheaper kernel
+// call and is what get_ticks_usec() (called constantly by the engine) uses.
 static void _setup_clock() {
-	struct timespec tv_now = { 0, 0 };
-	ERR_FAIL_COND_MSG(clock_gettime(CLOCK_MONOTONIC, &tv_now) != 0, "OS CLOCK IS NOT WORKING!");
-	_clock_start = ((uint64_t)tv_now.tv_nsec / 1000L) + (uint64_t)tv_now.tv_sec * 1000000L;
+	_clock_start = sceKernelGetProcessTimeWide();
 }
 
 int OS_Vita::get_video_driver_count() const {
@@ -74,12 +77,24 @@ void OS_Vita::initialize_core() {
 	init_thread_posix();
 #endif
 
+#ifdef VITA_BUFFERED_IO
+	// Buffered, syscall-light FileAccess (see file_access_vita.h).
+	FileAccess::make_default<FileAccessVita>(FileAccess::ACCESS_RESOURCES);
+	FileAccess::make_default<FileAccessVita>(FileAccess::ACCESS_USERDATA);
+	FileAccess::make_default<FileAccessVita>(FileAccess::ACCESS_FILESYSTEM);
+#else
 	FileAccess::make_default<FileAccessUnix>(FileAccess::ACCESS_RESOURCES);
 	FileAccess::make_default<FileAccessUnix>(FileAccess::ACCESS_USERDATA);
 	FileAccess::make_default<FileAccessUnix>(FileAccess::ACCESS_FILESYSTEM);
+#endif
 	DirAccess::make_default<DirAccessUnix>(DirAccess::ACCESS_RESOURCES);
 	DirAccess::make_default<DirAccessUnix>(DirAccess::ACCESS_USERDATA);
 	DirAccess::make_default<DirAccessUnix>(DirAccess::ACCESS_FILESYSTEM);
+
+#ifdef VITA_PRELOAD_PACK
+	// Serve every resource out of RAM instead of hitting the memory card.
+	PackedData::memory_pack_preload_func = VitaPackPreload::preload;
+#endif
 
 #ifndef NO_NETWORK
 	NetSocketPosix::make_default();
@@ -686,14 +701,7 @@ void OS_Vita::delay_usec(uint32_t p_usec) const {
 }
 
 uint64_t OS_Vita::get_ticks_usec() const {
-	// Unchecked return. Static analyzers might complain.
-	// If _setup_clock() succeeded, we assume clock_gettime() works.
-	struct timespec tv_now = { 0, 0 };
-	clock_gettime(CLOCK_MONOTONIC, &tv_now);
-	uint64_t longtime = ((uint64_t)tv_now.tv_nsec / 1000L) + (uint64_t)tv_now.tv_sec * 1000000L;
-	longtime -= _clock_start;
-
-	return longtime;
+	return sceKernelGetProcessTimeWide() - _clock_start;
 }
 
 String OS_Vita::get_stdin_string() {

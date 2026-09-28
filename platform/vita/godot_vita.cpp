@@ -31,11 +31,14 @@
 #include <limits.h>
 #include <locale.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #include "main/main.h"
 #include "os_vita.h"
+#include "pack_preload_vita.h"
 
+#include <psp2/io/fcntl.h>
 #include <taihen.h>
 
 #ifdef VITAGL
@@ -52,6 +55,95 @@ int _newlib_heap_size_user = 256 * 1024 * 1024;
 int _newlib_heap_size_user = MEMORY_NEWLIB_MB * 1024 * 1024;
 unsigned int sceLibcHeapSize = MEMORY_SCELIBC_MB * 1024 * 1024;
 #endif
+
+#ifndef VITA_OC_MHZ
+#define VITA_OC_MHZ 444
+#endif
+
+// Optional plain-text tuning file that ships next to the game data. It lets
+// the loading knobs be tweaked without rebuilding the eboot:
+//
+//   # app0:/game_data/vita_opt.txt
+//   preload_limit_mb=128   # max .pck size to slurp into RAM (0 = disable)
+//   arm_clock=444          # 333, 444 or 500 MHz
+//
+// Every key is optional and unknown keys are ignored.
+#define VITA_BOOT_CONFIG "app0:/game_data/vita_opt.txt"
+
+static int vita_arm_clock = VITA_OC_MHZ;
+
+// Trims trailing whitespace in place. Leading whitespace is skipped by
+// _skip_spaces().
+static void _trim(char *p_str) {
+	if (p_str == NULL) {
+		return;
+	}
+
+	int len = (int)strlen(p_str);
+	while (len > 0 && (p_str[len - 1] == '\r' || p_str[len - 1] == '\n' || p_str[len - 1] == ' ' || p_str[len - 1] == '\t')) {
+		p_str[--len] = 0;
+	}
+}
+
+static char *_skip_spaces(char *p_str) {
+	while (p_str[0] == ' ' || p_str[0] == '\t') {
+		p_str++;
+	}
+	return p_str;
+}
+
+static void _vita_apply_boot_config() {
+	const SceUID fd = sceIoOpen(VITA_BOOT_CONFIG, SCE_O_RDONLY, 0);
+	if (fd < 0) {
+		return; // No tuning file, keep the compiled-in defaults.
+	}
+
+	char buf[1024];
+	const int r = sceIoRead(fd, buf, sizeof(buf) - 1);
+	sceIoClose(fd);
+
+	if (r <= 0) {
+		return;
+	}
+	buf[r] = 0;
+
+	char *p = buf;
+	while (p != NULL && p[0] != 0) {
+		char *eol = strchr(p, '\n');
+		if (eol != NULL) {
+			eol[0] = 0;
+		}
+
+		char *line = _skip_spaces(p);
+		if (line[0] != '#' && line[0] != 0) {
+			char *eq = strchr(line, '=');
+			if (eq != NULL) {
+				eq[0] = 0;
+				char *key = line;
+				char *value = _skip_spaces(eq + 1);
+				_trim(key);
+				_trim(value);
+
+				if (strcmp(key, "preload_limit_mb") == 0) {
+#ifdef VITA_PRELOAD_PACK
+					const int mb = atoi(value);
+					VitaPackPreload::set_limit((uint64_t)(mb > 0 ? mb : 0) * 1024 * 1024);
+#endif
+				} else if (strcmp(key, "arm_clock") == 0) {
+					const int mhz = atoi(value);
+					if (mhz == 333 || mhz == 444 || mhz == 500) {
+						vita_arm_clock = mhz;
+					}
+				}
+			}
+		}
+
+		if (eol == NULL) {
+			break;
+		}
+		p = eol + 1;
+	}
+}
 
 int main(int argc, char *argv[]) {
 	OS_Vita os;
@@ -75,21 +167,27 @@ int main(int argc, char *argv[]) {
 #else
 	sceSysmoduleLoadModule(SCE_SYSMODULE_RAZOR_CAPTURE);
 #endif
-	scePowerSetArmClockFrequency(444);
+
+	_vita_apply_boot_config();
+
+	// Overclock: the Vita boots at 333 MHz and the engine is completely CPU
+	// bound while parsing scenes, inflating textures and compiling shaders.
+	// 444 MHz is safe on every retail unit, 500 MHz mostly works on PSTV.
+	scePowerSetArmClockFrequency(vita_arm_clock);
 	scePowerSetBusClockFrequency(222);
 	scePowerSetGpuClockFrequency(222);
 	scePowerSetGpuXbarClockFrequency(166);
 
-	sceClibPrintf("Showing the path now UwU: %d %s\n", argc, argv[0]);
 	char *args[] = { "--path", "app0:/game_data", "--main-pack", "app0:/game_data/game.pck" };
 
-	Error err = Main::setup("", sizeof(args) / sizeof(args[0]), args);
+	const Error err = Main::setup("", sizeof(args) / sizeof(args[0]), args);
 	if (err != OK) {
 		return 255;
 	}
 
-	if (Main::start())
+	if (Main::start()) {
 		os.run(); // it is actually the OS that decides how to run
+	}
 	Main::cleanup();
 	return 0;
 }

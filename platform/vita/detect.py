@@ -112,6 +112,17 @@ def configure(env):
             ]
         )
 
+    ## Loading speed knobs (see platform/vita/PERFORMANCE.md)
+    if env["vita_buffered_io"]:
+        env.Append(CPPFLAGS=["-DVITA_BUFFERED_IO"])
+
+    if env["vita_preload_pack"]:
+        env.Append(CPPFLAGS=["-DVITA_PRELOAD_PACK"])
+
+    env.Append(CPPFLAGS=["-DVITA_PRELOAD_LIMIT_MB=%s" % (env["vita_preload_limit_mb"])])
+    env.Append(CPPFLAGS=["-DVITA_FILE_BUFFER_KB=%s" % (env["vita_file_buffer_kb"])])
+    env.Append(CPPFLAGS=["-DVITA_OC_MHZ=%s" % (env["vita_oc"])])
+
     if env["target"] == "release":
         # -O3 -ffast-math is identical to -Ofast. We need to split it out so we can selectively disable
         # -ffast-math in code for which it generates wrong results.

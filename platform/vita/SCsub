@@ -6,6 +6,8 @@ files = [
     "context_egl_vita.cpp",
     "joypad_vita.cpp",
     "audio_driver_vita.cpp",
+    "file_access_vita.cpp",
+    "pack_preload_vita.cpp",
 ]
 
 prog = env.add_program("#temp-build/godot", files)
