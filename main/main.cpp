@@ -297,6 +297,8 @@ void Main::print_help(const char *p_binary) {
 	OS::get_singleton()->print("  --path <directory>               Path to a project (<directory> must contain a 'project.godot' file).\n");
 	OS::get_singleton()->print("  -u, --upwards                    Scan folders upwards for project.godot file.\n");
 	OS::get_singleton()->print("  --main-pack <file>               Path to a pack (.pck) file to load.\n");
+	OS::get_singleton()->print("  --preload-pack[=MiB]             Load the whole .pck into RAM before parsing it\n");
+	OS::get_singleton()->print("                                   (much faster loading on slow storage).\n");
 	OS::get_singleton()->print("  --render-thread <mode>           Render thread mode ('unsafe', 'safe', 'separate').\n");
 	OS::get_singleton()->print("  --remote-fs <address>            Remote filesystem (<host/IP>[:<port>] address).\n");
 	OS::get_singleton()->print("  --remote-fs-password <password>  Password for remote filesystem.\n");
@@ -484,6 +486,7 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 	String debug_host;
 	bool skip_breakpoints = false;
 	String main_pack;
+	int preload_pack_mb = 0; // >0: MiB cap, -1: platform default, 0: disabled
 	bool quiet_stdout = false;
 	int rtm = -1;
 
@@ -903,6 +906,14 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 				goto error;
 			};
 
+		} else if (I->get() == "--preload-pack" || I->get().begins_with("--preload-pack=")) {
+			// Load the whole .pck into RAM before parsing it. Big win on devices
+			// with slow storage (PS Vita, SD cards, network shares) because every
+			// resource read becomes a memcpy() instead of a read syscall.
+			const String arg = I->get();
+			const int eq = arg.find("=");
+			preload_pack_mb = (eq >= 0) ? arg.substr(eq + 1, arg.length() - eq - 1).to_int() : -1;
+
 		} else if (I->get() == "-d" || I->get() == "--debug") {
 			debug_mode = "local";
 			OS::get_singleton()->_debug_stdout = true;
@@ -1013,6 +1024,13 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 		}
 
 		FileAccess::make_default<FileAccessNetwork>(FileAccess::ACCESS_RESOURCES);
+	}
+
+	if (preload_pack_mb != 0 && PackedData::memory_pack_preload_func == nullptr) {
+		PackedData::memory_pack_preload_func = PackedData::default_memory_pack_preload;
+	}
+	if (preload_pack_mb > 0) {
+		PackedData::memory_pack_preload_limit = (uint64_t)preload_pack_mb * 1024 * 1024;
 	}
 
 	if (globals->setup(project_path, main_pack, upwards, editor) == OK) {

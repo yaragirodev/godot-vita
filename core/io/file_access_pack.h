@@ -45,6 +45,64 @@
 
 class PackSource;
 
+// A whole .pck file that has been slurped into RAM by the platform layer.
+// On consoles with very slow storage (PS Vita) this turns the thousands of
+// tiny read syscalls performed while loading resources into plain memcpy()s.
+struct MemoryPack {
+	const uint8_t *data;
+	uint64_t size;
+	void (*free_func)(void *);
+
+	MemoryPack() {
+		data = nullptr;
+		size = 0;
+		free_func = nullptr;
+	}
+};
+
+// A FileAccess that reads straight out of a MemoryPack. It never touches the disk.
+class FileAccessPackMem : public FileAccess {
+	const uint8_t *base; // start of the pack blob
+	uint64_t offset; // start of this file inside the pack blob
+	uint64_t length; // size of this file
+	mutable uint64_t pos;
+	mutable bool eof;
+
+public:
+	void open_custom(const uint8_t *p_base, uint64_t p_offset, uint64_t p_size);
+
+	virtual Error _open(const String &p_path, int p_mode_flags);
+	virtual void close();
+	virtual bool is_open() const;
+
+	virtual void seek(uint64_t p_position);
+	virtual void seek_end(int64_t p_position = 0);
+	virtual uint64_t get_position() const;
+	virtual uint64_t get_len() const;
+	virtual bool eof_reached() const;
+
+	virtual uint8_t get_8() const;
+	virtual uint16_t get_16() const;
+	virtual uint32_t get_32() const;
+	virtual uint64_t get_64() const;
+	virtual uint64_t get_buffer(uint8_t *p_dst, uint64_t p_length) const;
+	virtual String get_line() const;
+	virtual String get_as_utf8_string(bool p_skip_cr = true) const;
+
+	virtual Error get_error() const;
+	virtual void flush();
+	virtual void store_8(uint8_t p_dest);
+	virtual void store_buffer(const uint8_t *p_src, uint64_t p_length);
+
+	virtual bool file_exists(const String &p_name);
+
+	virtual uint64_t _get_modified_time(const String &p_file) { return 0; }
+	virtual uint32_t _get_unix_permissions(const String &p_file) { return 0; }
+	virtual Error _set_unix_permissions(const String &p_file, uint32_t p_permissions) { return FAILED; }
+
+	FileAccessPackMem();
+};
+
 class PackedData {
 	friend class FileAccessPack;
 	friend class DirAccessPack;
@@ -119,6 +177,22 @@ public:
 	_FORCE_INLINE_ DirAccess *try_open_directory(const String &p_path);
 	_FORCE_INLINE_ bool has_directory(const String &p_path);
 
+	// Optional platform hook: load a whole pack file into RAM before it is parsed.
+	// Returning false simply falls back to the regular (buffered) file access.
+	typedef bool (*MemoryPackPreloadFunc)(const String &p_path, MemoryPack *r_pack);
+	static MemoryPackPreloadFunc memory_pack_preload_func;
+	// Hard cap in bytes for the preload. 0 means "let the platform hook decide".
+	static uint64_t memory_pack_preload_limit;
+
+	static bool try_preload_memory_pack(const String &p_path);
+	static bool has_memory_pack(const String &p_path);
+	// Portable preloader: reads the pack through a regular FileAccess into a
+	// single malloc()ed buffer. Used by `--preload-pack` and available to any
+	// platform that does not install a faster, native implementation.
+	static bool default_memory_pack_preload(const String &p_path, MemoryPack *r_pack);
+	static bool get_memory_pack(const String &p_path, const uint8_t **r_data, uint64_t *r_size);
+	static void clear_memory_packs();
+
 	PackedData();
 	~PackedData();
 };
@@ -160,6 +234,9 @@ public:
 	virtual bool eof_reached() const;
 
 	virtual uint8_t get_8() const;
+	virtual uint16_t get_16() const;
+	virtual uint32_t get_32() const;
+	virtual uint64_t get_64() const;
 
 	virtual uint64_t get_buffer(uint8_t *p_dst, uint64_t p_length) const;
 
